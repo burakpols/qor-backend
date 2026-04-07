@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Environment variables - GÜVENLİK: Asla Git'e eklemeyin!
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+coverage/
+*.coverage
+
+# Build
+dist/
+build/
+
+# Uploads ( Railway'de kalıcı değil)
+public/images/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
