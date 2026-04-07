@@ -295,6 +295,114 @@ app.post("/api/v1/auth/register", verifyToken, checkRole(["admin"]), async (req,
   }
 });
 
+// ==================== USER MANAGEMENT ENDPOINTS ====================
+
+// Get all users (admin only)
+app.get("/api/v1/users", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    const users = await User.find({}).select("-password").sort({ createdAt: -1 });
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error.message);
+    res.status(500).json({ message: "Error fetching users" });
+  }
+});
+
+// Get single user (admin only)
+app.get("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json(user);
+  } catch (error) {
+    console.error("Error fetching user:", error.message);
+    res.status(500).json({ message: "Error fetching user" });
+  }
+});
+
+// Update user (admin only)
+app.put("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    const { username, email, role, isActive } = req.body;
+    
+    // Kullanıcının kendini silmesini engelle
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ message: "Kendinizi silemezsiniz" });
+    }
+
+    const updateData = {};
+    if (username) updateData.username = username;
+    if (email) updateData.email = email;
+    if (role) updateData.role = role;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    updateData.updatedAt = Date.now();
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    ).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ message: "User updated successfully", user: updatedUser });
+  } catch (error) {
+    console.error("Error updating user:", error.message);
+    res.status(500).json({ message: "Error updating user" });
+  }
+});
+
+// Delete user (admin only)
+app.delete("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    // Kullanıcının kendini silmesini engelle
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ message: "Kendinizi silemezsiniz" });
+    }
+
+    const deletedUser = await User.findByIdAndDelete(req.params.id);
+    if (!deletedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ message: "User deleted successfully", userId: req.params.id });
+  } catch (error) {
+    console.error("Error deleting user:", error.message);
+    res.status(500).json({ message: "Error deleting user" });
+  }
+});
+
+// Toggle user active status (admin only)
+app.post("/api/v1/users/:id/toggle-active", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    // Kullanıcının kendini pasif yapmasını engelle
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ message: "Kendinizi pasif yapamazsınız" });
+    }
+
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    user.isActive = !user.isActive;
+    user.updatedAt = Date.now();
+    await user.save();
+
+    res.json({ 
+      message: user.isActive ? "User activated" : "User deactivated",
+      user: { id: user._id, username: user.username, isActive: user.isActive }
+    });
+  } catch (error) {
+    console.error("Error toggling user status:", error.message);
+    res.status(500).json({ message: "Error toggling user status" });
+  }
+});
+
 // ==================== MENU ENDPOINTS ====================
 
 // Get all items
