@@ -115,6 +115,8 @@ const allowedOrigins = [
   /^http:\/\/192\.168\..*:3000$/,
   /\.railway\.app$/,  // Railway tüm domain'leri kabul et
   /\.vercel\.app$/,   // Vercel domain'leri
+  /\.netlify\.app$/,  // Netlify domain'leri
+  "https://qor-frontend.netlify.app", // Frontend Netlify URL
 ];
 
 // Production'da ALLOWED_ORIGINS environment variable'dan da oku
