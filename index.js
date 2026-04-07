@@ -106,54 +106,19 @@ mongoose
 const app = express();
 app.use(express.static("public"));
 
-// CORS configuration - Railway deployment için
-// Railway otomatik olarak *.up.railway.app domain'leri sağlar
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "http://127.0.0.1:3000",
-  /^http:\/\/192\.168\..*:3000$/,
-  /\.railway\.app$/,  // Railway tüm domain'leri kabul et
-  /\.vercel\.app$/,   // Vercel domain'leri
-  /\.netlify\.app$/,  // Netlify domain'leri
-  "https://qor-frontend.netlify.app", // Frontend Netlify URL
-];
-
-// Production'da ALLOWED_ORIGINS environment variable'dan da oku
-const envOrigins = process.env.ALLOWED_ORIGINS?.split(",").map(o => o.trim()) || [];
-const allAllowedOrigins = [...allowedOrigins, ...envOrigins];
-
+// CORS configuration - Tüm origin'lere izin ver (debug için)
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Development ortamında loglama
-      if (NODE_ENV === "development") {
-        console.log("📡 CORS Request from:", origin);
-      }
-      
-      // Origin yoksa (mobil uygulamalar vb.) izin ver
-      if (!origin) {
-        return callback(null, true);
-      }
-      
-      // İzin verilen origin'leri kontrol et
-      const isAllowed = allAllowedOrigins.some(allowed => {
-        if (typeof allowed === 'string') {
-          return allowed === origin;
-        }
-        return allowed.test(origin);
-      });
-      
-      if (isAllowed) {
-        callback(null, true);
-      } else {
-        console.warn("❌ CORS blocked:", origin);
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: true, // Tüm origin'lere izin ver - Railway production için gerekli
     credentials: true,
   })
 );
+
+// Debug: Tüm istekleri logla
+app.use((req, res, next) => {
+  console.log(`📡 ${req.method} ${req.path} from ${req.headers.origin}`);
+  next();
+});
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
