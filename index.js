@@ -11,6 +11,7 @@ require("dotenv").config();
 const Menu = require("./models/Menu");
 const Order = require("./models/Order");
 const User = require("./models/User");
+const aiService = require("./aiService");
 
 // ==================== SETTINGS SCHEMA ====================
 const settingsSchema = new mongoose.Schema({
@@ -154,6 +155,11 @@ const checkRole = (allowedRoles) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
+    // superadmin can access everything
+    if (req.user.role === "superadmin") {
+      return next();
+    }
+
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({ message: "Forbidden - Insufficient permissions" });
     }
@@ -234,6 +240,11 @@ app.post("/api/v1/auth/register", verifyToken, checkRole(["admin"]), async (req,
       return res.status(400).json({ message: "Username and password are required" });
     }
 
+    // admin cannot create superadmin
+    if (req.user.role === "admin" && role === "superadmin") {
+      return res.status(403).json({ message: "Admins cannot create superadmins" });
+    }
+
     const existingUser = await User.findOne({ username });
     if (existingUser) {
       return res.status(400).json({ message: "Username already exists" });
@@ -294,9 +305,25 @@ app.put("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res)
   try {
     const { username, email, role, isActive } = req.body;
     
-    // Kullanıcının kendini silmesini engelle
-    if (req.params.id === req.user.userId) {
-      return res.status(400).json({ message: "Kendinizi silemezsiniz" });
+    const targetUser = await User.findById(req.params.id);
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // superadmin protection
+    if (targetUser.role === "superadmin") {
+      if (req.user.role !== "superadmin") {
+        return res.status(403).json({ message: "Cannot modify superadmin" });
+      }
+      // superadmin role cannot be changed
+      if (role && role !== "superadmin") {
+        return res.status(403).json({ message: "Cannot remove superadmin role" });
+      }
+    }
+
+    // admin protection
+    if (req.user.role === "admin" && role === "superadmin") {
+      return res.status(403).json({ message: "Admins cannot promote to superadmin" });
     }
 
     const updateData = {};
@@ -312,10 +339,6 @@ app.put("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res)
       { new: true, runValidators: true }
     ).select("-password");
 
-    if (!updatedUser) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
     res.json({ message: "User updated successfully", user: updatedUser });
   } catch (error) {
     console.error("Error updating user:", error.message);
@@ -326,16 +349,22 @@ app.put("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res)
 // Delete user (admin only)
 app.delete("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, res) => {
   try {
-    // Kullanıcının kendini silmesini engelle
-    if (req.params.id === req.user.userId) {
-      return res.status(400).json({ message: "Kendinizi silemezsiniz" });
-    }
-
-    const deletedUser = await User.findByIdAndDelete(req.params.id);
-    if (!deletedUser) {
+    const targetUser = await User.findById(req.params.id);
+    if (!targetUser) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    // self protection
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ message: "Cannot delete yourself" });
+    }
+
+    // superadmin protection
+    if (targetUser.role === "superadmin") {
+      return res.status(403).json({ message: "Superadmin cannot be deleted" });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
     res.json({ message: "User deleted successfully", userId: req.params.id });
   } catch (error) {
     console.error("Error deleting user:", error.message);
@@ -346,23 +375,28 @@ app.delete("/api/v1/users/:id", verifyToken, checkRole(["admin"]), async (req, r
 // Toggle user active status (admin only)
 app.post("/api/v1/users/:id/toggle-active", verifyToken, checkRole(["admin"]), async (req, res) => {
   try {
-    // Kullanıcının kendini pasif yapmasını engelle
-    if (req.params.id === req.user.userId) {
-      return res.status(400).json({ message: "Kendinizi pasif yapamazsınız" });
-    }
-
-    const user = await User.findById(req.params.id);
-    if (!user) {
+    const targetUser = await User.findById(req.params.id);
+    if (!targetUser) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    user.isActive = !user.isActive;
-    user.updatedAt = Date.now();
-    await user.save();
+    // self protection
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ message: "Cannot deactivate yourself" });
+    }
+
+    // superadmin protection
+    if (targetUser.role === "superadmin") {
+      return res.status(403).json({ message: "Superadmin cannot be deactivated" });
+    }
+
+    targetUser.isActive = !targetUser.isActive;
+    targetUser.updatedAt = Date.now();
+    await targetUser.save();
 
     res.json({ 
-      message: user.isActive ? "User activated" : "User deactivated",
-      user: { id: user._id, username: user.username, isActive: user.isActive }
+      message: targetUser.isActive ? "User activated" : "User deactivated",
+      user: { id: targetUser._id, username: targetUser.username, isActive: targetUser.isActive }
     });
   } catch (error) {
     console.error("Error toggling user status:", error.message);
@@ -721,274 +755,272 @@ app.put("/api/v1/orders/:id", verifyToken, checkRole(["admin", "manager", "waite
   }
 });
 
-// ==================== ANALYTICS ENDPOINTS ====================
+// Helper function to calculate analytics data
+async function calculateAnalytics() {
+  const orders = await Order.find({}).populate("items.menuItemId", "title price category");
+  const items = await Menu.find({});
+
+  const totalOrders = orders.length;
+  const completedOrders = orders.filter((o) => o.status === "served").length;
+  const pendingOrders = orders.filter((o) => o.status !== "served" && o.status !== "cancelled").length;
+  const cancelledOrders = orders.filter((o) => o.status === "cancelled").length;
+  const totalRevenue = orders.filter((o) => o.status === "served").reduce((sum, o) => sum + (o.total || 0), 0);
+
+  const mostOrderedItems = items
+    .map((item) => ({ title: item.title, count: item.popularity || 0 }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const ordersByTableObj = {};
+  orders.forEach((order) => {
+    if (order.tableNumber) {
+      const key = `Masa ${order.tableNumber}`;
+      ordersByTableObj[key] = (ordersByTableObj[key] || 0) + 1;
+    }
+  });
+  const ordersByTable = Object.entries(ordersByTableObj).map(([table, count]) => ({ table, count }));
+
+  const ordersByStatus = {
+    "Beklemede": orders.filter((o) => o.status === "pending").length,
+    "Onaylandı": orders.filter((o) => o.status === "confirmed").length,
+    "Hazırlandı": orders.filter((o) => o.status === "prepared").length,
+    "Servis Edildi": orders.filter((o) => o.status === "served").length,
+    "İptal Edildi": orders.filter((o) => o.status === "cancelled").length,
+  };
+
+  const dailyRevenueObj = {};
+  const now = new Date();
+  for (let i = 6; i >= 0; i--) {
+    const date = new Date(now);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toLocaleDateString("tr-TR");
+    dailyRevenueObj[dateStr] = 0;
+  }
+
+  orders.forEach((order) => {
+    if (order.status === "served") {
+      const dateStr = new Date(order.createdAt).toLocaleDateString("tr-TR");
+      if (dailyRevenueObj[dateStr] !== undefined) {
+        dailyRevenueObj[dateStr] += order.total || 0;
+      }
+    }
+  });
+  const dailyRevenue = Object.entries(dailyRevenueObj).map(([date, revenue]) => ({ date, revenue }));
+
+  const hourlyOrdersObj = {};
+  for (let i = 0; i < 24; i++) {
+    hourlyOrdersObj[i] = 0;
+  }
+  orders.filter((o) => o.status === "served").forEach((order) => {
+    const hour = new Date(order.createdAt).getHours();
+    hourlyOrdersObj[hour]++;
+  });
+  const hourlyOrders = Object.entries(hourlyOrdersObj).map(([hour, count]) => ({ hour: parseInt(hour), count }));
+
+  const categoryStats = {};
+  orders.filter((o) => o.status === "served").forEach((order) => {
+    order.items?.forEach((item) => {
+      if (item.menuItemId?.category) {
+        const cat = item.menuItemId.category;
+        categoryStats[cat] = (categoryStats[cat] || 0) + item.quantity;
+      }
+    });
+  });
+
+  const lowestPerformingItems = items
+    .map((item) => ({ title: item.title, count: item.popularity || 0 }))
+    .sort((a, b) => a.count - b.count)
+    .slice(0, 5);
+
+  const completionRate = totalOrders > 0 ? ((completedOrders / totalOrders) * 100).toFixed(2) : 0;
+  const cancelRate = totalOrders > 0 ? ((cancelledOrders / totalOrders) * 100).toFixed(2) : 0;
+  const averageOrderValue = completedOrders > 0 ? (totalRevenue / completedOrders).toFixed(2) : 0;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const todayRevenue = orders
+    .filter((o) => o.status === "served" && new Date(o.createdAt) >= today)
+    .reduce((sum, o) => sum + (o.total || 0), 0);
+
+  const yesterdayRevenue = orders
+    .filter((o) => o.status === "served" && 
+      new Date(o.createdAt) >= yesterday && 
+      new Date(o.createdAt) < today)
+    .reduce((sum, o) => sum + (o.total || 0), 0);
+
+  const revenueChange = yesterdayRevenue > 0 
+    ? (((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(2)
+    : 0;
+
+  const totalTables = 20;
+  const usedTables = Object.keys(ordersByTable).length;
+  const tableUtilization = ((usedTables / totalTables) * 100).toFixed(2);
+
+  const combinations = {};
+  orders.filter((o) => o.status === "served").forEach((order) => {
+    const itemTitles = order.items?.map(i => i.title).sort().join(" + ");
+    if (itemTitles) {
+      combinations[itemTitles] = (combinations[itemTitles] || 0) + 1;
+    }
+  });
+  const productCombinations = Object.entries(combinations)
+    .map(([combo, count]) => ({ combo, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const uniqueCustomers = new Set(orders.map((o) => o.customerName)).size;
+  const repeatOrders = orders.filter((o) => {
+    const count = orders.filter((x) => x.customerName === o.customerName).length;
+    return count > 1;
+  }).length;
+  const repeatCustomerRate = uniqueCustomers > 0 ? ((repeatOrders / (uniqueCustomers * 2)) * 100).toFixed(2) : 0;
+
+  const peakHours = Object.entries(hourlyOrders)
+    .map(([hour, count]) => ({ hour: parseInt(hour), count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map((h) => `${h.hour}:00 (${h.count} sipariş)`);
+
+  const categoryPerformance = {};
+  orders.filter((o) => o.status === "served").forEach((order) => {
+    order.items?.forEach((item) => {
+      const cat = item.menuItemId?.category || "Diğer";
+      if (!categoryPerformance[cat]) {
+        categoryPerformance[cat] = { totalRevenue: 0, orderCount: 0 };
+      }
+      categoryPerformance[cat].totalRevenue += (item.price * item.quantity) || 0;
+      categoryPerformance[cat].orderCount += 1;
+    });
+  });
+  const categoryPerformanceData = Object.entries(categoryPerformance)
+    .map(([cat, data]) => ({
+      category: cat,
+      avgValue: (data.totalRevenue / data.orderCount).toFixed(2),
+      totalRevenue: data.totalRevenue.toFixed(2),
+    }))
+    .sort((a, b) => b.avgValue - a.avgValue);
+
+  const currentDate = new Date();
+  const weekStart = new Date(currentDate);
+  weekStart.setDate(currentDate.getDate() - currentDate.getDay());
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  
+  const previousWeekStart = new Date(weekStart);
+  previousWeekStart.setDate(weekStart.getDate() - 7);
+  const previousWeekEnd = new Date(weekEnd);
+  previousWeekEnd.setDate(weekEnd.getDate() - 7);
+
+  const thisWeekOrders = orders.filter(
+    (o) => o.status === "served" && 
+      new Date(o.createdAt) >= weekStart && 
+      new Date(o.createdAt) <= weekEnd
+  );
+  const lastWeekOrders = orders.filter(
+    (o) => o.status === "served" && 
+      new Date(o.createdAt) >= previousWeekStart && 
+      new Date(o.createdAt) <= previousWeekEnd
+  );
+
+  const thisWeekRevenue = thisWeekOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+  const lastWeekRevenue = lastWeekOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+  const weeklyChangePercent = lastWeekRevenue > 0 
+    ? (((thisWeekRevenue - lastWeekRevenue) / lastWeekRevenue) * 100).toFixed(2)
+    : 0;
+
+  const weeklyComparison = {
+    thisWeek: { orders: thisWeekOrders.length, revenue: thisWeekRevenue.toFixed(2) },
+    lastWeek: { orders: lastWeekOrders.length, revenue: lastWeekRevenue.toFixed(2) },
+    changePercent: weeklyChangePercent,
+  };
+
+  const allDailyRevenues = Object.values(dailyRevenue).filter((r) => r > 0);
+  const dailyAverage = allDailyRevenues.length > 0 
+    ? (allDailyRevenues.reduce((sum, r) => sum + r, 0) / allDailyRevenues.length).toFixed(2)
+    : 0;
+
+  const targetVsActual = {
+    target: dailyAverage,
+    actual: todayRevenue.toFixed(2),
+    percentage: dailyAverage > 0 ? ((todayRevenue / dailyAverage) * 100).toFixed(2) : 0,
+  };
+
+  const prepTimes = orders
+    .filter((o) => o.status === "served" && o.createdAt && o.updatedAt)
+    .map((o) => (new Date(o.updatedAt) - new Date(o.createdAt)) / 60000);
+  const avgPrepTime = prepTimes.length > 0 
+    ? (prepTimes.reduce((a, b) => a + b, 0) / prepTimes.length).toFixed(2)
+    : 0;
+
+  return {
+    summary: {
+      totalOrders,
+      completedOrders,
+      pendingOrders,
+      cancelledOrders,
+      totalRevenue: totalRevenue.toFixed(2),
+      completionRate,
+      cancelRate,
+      averageOrderValue,
+      tableUtilization,
+      repeatCustomerRate,
+      avgPrepTime,
+    },
+    mostOrderedItems,
+    lowestPerformingItems,
+    ordersByStatus,
+    dailyRevenue,
+    hourlyOrders,
+    categoryStats,
+    productCombinations,
+    peakHours,
+    categoryPerformanceData,
+    weeklyComparison,
+    targetVsActual,
+    revenueChange,
+  };
+}
 
 // Get analytics data
-app.get("/api/v1/analytics", verifyToken, checkRole(["admin", "manager"]), async (req, res) => {
+app.get("/api/v1/analytics", verifyToken, checkRole(["admin", "manager", "waiter"]), async (req, res) => {
   try {
-    console.log("📊 Analytics endpoint called");
-    // Get all orders and items
-    const orders = await Order.find({}).populate("items.menuItemId", "title price category");
-    console.log("✓ Orders fetched:", orders.length);
-    const items = await Menu.find({});
-
-    // Calculate stats
-    const totalOrders = orders.length;
-    const completedOrders = orders.filter((o) => o.status === "served").length;
-    const pendingOrders = orders.filter((o) => o.status !== "served" && o.status !== "cancelled").length;
-    const cancelledOrders = orders.filter((o) => o.status === "cancelled").length;
-    const totalRevenue = orders.filter((o) => o.status === "served").reduce((sum, o) => sum + (o.total || 0), 0);
-
-    // Most ordered items - use Menu.popularity field (single source of truth)
-    const mostOrderedItems = items
-      .map((item) => ({ title: item.title, count: item.popularity || 0 }))
-      .filter((item) => item.count > 0) // Show only items with sales
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    // Orders by table
-    const ordersByTable = {};
-    orders.forEach((order) => {
-      if (order.tableNumber) {
-        const key = `Masa ${order.tableNumber}`;
-        ordersByTable[key] = (ordersByTable[key] || 0) + 1;
-      }
-    });
-
-    // Orders by status
-    const ordersByStatus = {
-      "Beklemede": orders.filter((o) => o.status === "pending").length,
-      "Onaylandı": orders.filter((o) => o.status === "confirmed").length,
-      "Hazırlandı": orders.filter((o) => o.status === "prepared").length,
-      "Servis Edildi": orders.filter((o) => o.status === "served").length,
-      "İptal Edildi": orders.filter((o) => o.status === "cancelled").length,
-    };
-
-    // Daily revenue (last 7 days)
-    const dailyRevenue = {};
-    const now = new Date();
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      const dateStr = date.toLocaleDateString("tr-TR");
-      dailyRevenue[dateStr] = 0;
-    }
-
-    orders.forEach((order) => {
-      if (order.status === "served") {
-        const dateStr = new Date(order.createdAt).toLocaleDateString("tr-TR");
-        if (dailyRevenue[dateStr] !== undefined) {
-          dailyRevenue[dateStr] += order.total || 0;
-        }
-      }
-    });
-
-    // Hourly orders distribution (only SERVED orders)
-    const hourlyOrders = {};
-    for (let i = 0; i < 24; i++) {
-      hourlyOrders[i] = 0;
-    }
-    orders.filter((o) => o.status === "served").forEach((order) => {
-      const hour = new Date(order.createdAt).getHours();
-      hourlyOrders[hour]++;
-    });
-
-    // Category statistics (only from SERVED orders)
-    const categoryStats = {};
-    orders.filter((o) => o.status === "served").forEach((order) => {
-      order.items?.forEach((item) => {
-        if (item.menuItemId?.category) {
-          const cat = item.menuItemId.category;
-          categoryStats[cat] = (categoryStats[cat] || 0) + item.quantity;
-        }
-      });
-    });
-
-    // Lowest performing items - use Menu.popularity field
-    const lowestPerformingItems = items
-      .map((item) => ({ title: item.title, count: item.popularity || 0 }))
-      .sort((a, b) => a.count - b.count)
-      .slice(0, 5);
-
-    // Completion rate
-    const completionRate = totalOrders > 0 ? ((completedOrders / totalOrders) * 100).toFixed(2) : 0;
-    const cancelRate = totalOrders > 0 ? ((cancelledOrders / totalOrders) * 100).toFixed(2) : 0;
-
-    // Average order value
-    const averageOrderValue = completedOrders > 0 ? (totalRevenue / completedOrders).toFixed(2) : 0;
-
-    // Revenue comparison (today vs yesterday)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    const todayRevenue = orders
-      .filter((o) => o.status === "served" && new Date(o.createdAt) >= today)
-      .reduce((sum, o) => sum + (o.total || 0), 0);
-
-    const yesterdayRevenue = orders
-      .filter((o) => o.status === "served" && 
-        new Date(o.createdAt) >= yesterday && 
-        new Date(o.createdAt) < today)
-      .reduce((sum, o) => sum + (o.total || 0), 0);
-
-    const revenueChange = yesterdayRevenue > 0 
-      ? (((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(2)
-      : 0;
-
-    // Table utilization
-    const totalTables = 20; // Assuming 20 tables
-    const usedTables = Object.keys(ordersByTable).length;
-    const tableUtilization = ((usedTables / totalTables) * 100).toFixed(2);
-
-    // Product combinations (items ordered together) - only from SERVED orders
-    const combinations = {};
-    orders.filter((o) => o.status === "served").forEach((order) => {
-      const itemTitles = order.items?.map(i => i.title).sort().join(" + ");
-      if (itemTitles) {
-        combinations[itemTitles] = (combinations[itemTitles] || 0) + 1;
-      }
-    });
-    const productCombinations = Object.entries(combinations)
-      .map(([combo, count]) => ({ combo, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    // ========== 6 NEW PROFESSIONAL METRICS ==========
-
-    // 1. Repeat Customer Rate (müşteri tekrar satın alma oranı)
-    const uniqueCustomers = new Set(orders.map((o) => o.customerName)).size;
-    const repeatOrders = orders.filter((o) => {
-      const count = orders.filter((x) => x.customerName === o.customerName).length;
-      return count > 1;
-    }).length;
-    const repeatCustomerRate = uniqueCustomers > 0 ? ((repeatOrders / (uniqueCustomers * 2)) * 100).toFixed(2) : 0;
-
-    // 2. Peak Hours (en yoğun saatler - top 3)
-    const peakHours = Object.entries(hourlyOrders)
-      .map(([hour, count]) => ({ hour: parseInt(hour), count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3)
-      .map((h) => `${h.hour}:00 (${h.count} sipariş)`);
-
-    // 3. Category Performance (kategori başına avg sipariş değeri)
-    const categoryPerformance = {};
-    orders.filter((o) => o.status === "served").forEach((order) => {
-      order.items?.forEach((item) => {
-        const cat = item.menuItemId?.category || "Diğer";
-        if (!categoryPerformance[cat]) {
-          categoryPerformance[cat] = { totalRevenue: 0, orderCount: 0 };
-        }
-        categoryPerformance[cat].totalRevenue += (item.price * item.quantity) || 0;
-        categoryPerformance[cat].orderCount += 1;
-      });
-    });
-    const categoryPerformanceData = Object.entries(categoryPerformance)
-      .map(([cat, data]) => ({
-        category: cat,
-        avgValue: (data.totalRevenue / data.orderCount).toFixed(2),
-        totalRevenue: data.totalRevenue.toFixed(2),
-      }))
-      .sort((a, b) => b.avgValue - a.avgValue);
-
-    // 4. Weekly Comparison (bu hafta vs geçen hafta)
-    const currentDate = new Date();
-    const weekStart = new Date(currentDate);
-    weekStart.setDate(currentDate.getDate() - currentDate.getDay());
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
-    
-    const previousWeekStart = new Date(weekStart);
-    previousWeekStart.setDate(weekStart.getDate() - 7);
-    const previousWeekEnd = new Date(weekEnd);
-    previousWeekEnd.setDate(weekEnd.getDate() - 7);
-
-    const thisWeekOrders = orders.filter(
-      (o) => o.status === "served" && 
-        new Date(o.createdAt) >= weekStart && 
-        new Date(o.createdAt) <= weekEnd
-    );
-    const lastWeekOrders = orders.filter(
-      (o) => o.status === "served" && 
-        new Date(o.createdAt) >= previousWeekStart && 
-        new Date(o.createdAt) <= previousWeekEnd
-    );
-
-    const thisWeekRevenue = thisWeekOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-    const lastWeekRevenue = lastWeekOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-    const weeklyChangePercent = lastWeekRevenue > 0 
-      ? (((thisWeekRevenue - lastWeekRevenue) / lastWeekRevenue) * 100).toFixed(2)
-      : 0;
-
-    const weeklyComparison = {
-      thisWeek: {
-        orders: thisWeekOrders.length,
-        revenue: thisWeekRevenue.toFixed(2),
-      },
-      lastWeek: {
-        orders: lastWeekOrders.length,
-        revenue: lastWeekRevenue.toFixed(2),
-      },
-      changePercent: weeklyChangePercent,
-    };
-
-    // 5. Daily Target vs Actual (günlük hedef: tüm günlerin average revenue)
-    const allDailyRevenues = Object.values(dailyRevenue).filter((r) => r > 0);
-    const dailyAverage = allDailyRevenues.length > 0 
-      ? (allDailyRevenues.reduce((sum, r) => sum + r, 0) / allDailyRevenues.length).toFixed(2)
-      : 0;
-
-    const targetVsActual = {
-      target: dailyAverage,
-      actual: todayRevenue.toFixed(2),
-      percentage: dailyAverage > 0 ? ((todayRevenue / dailyAverage) * 100).toFixed(2) : 0,
-    };
-
-    // 6. Average Order Preparation Time (pending → served süresi, dakika cinsinden)
-    const prepTimes = orders
-      .filter((o) => o.status === "served" && o.createdAt && o.updatedAt)
-      .map((o) => (new Date(o.updatedAt) - new Date(o.createdAt)) / 60000); // Convert to minutes
-    const avgPrepTime = prepTimes.length > 0 
-      ? (prepTimes.reduce((a, b) => a + b, 0) / prepTimes.length).toFixed(2)
-      : 0;
-
-    res.json({
-      summary: {
-        totalOrders,
-        completedOrders,
-        pendingOrders,
-        cancelledOrders,
-        totalRevenue: totalRevenue.toFixed(2),
-        completionRate,
-        cancelRate,
-        averageOrderValue,
-        tableUtilization,
-      },
-      mostOrderedItems,
-      lowestPerformingItems,
-      ordersByTable: Object.entries(ordersByTable).map(([table, count]) => ({ table, count })),
-      ordersByStatus,
-      dailyRevenue: Object.entries(dailyRevenue).map(([date, revenue]) => ({ date, revenue })),
-      hourlyOrders: Object.entries(hourlyOrders).map(([hour, count]) => ({ hour: parseInt(hour), count })),
-      categoryStats: Object.entries(categoryStats).map(([cat, count]) => ({ category: cat, count })),
-      revenueComparison: {
-        today: todayRevenue.toFixed(2),
-        yesterday: yesterdayRevenue.toFixed(2),
-        changePercent: revenueChange,
-      },
-      productCombinations,
-      // 6 NEW PROFESSIONAL METRICS
-      repeatCustomerRate,
-      peakHours,
-      categoryPerformance: categoryPerformanceData,
-      weeklyComparison,
-      targetVsActual,
-      avgPrepTime,
-    });
+    const data = await calculateAnalytics();
+    res.json(data);
   } catch (error) {
     console.error("Error fetching analytics:", error.message);
     res.status(500).json({ message: "Error fetching analytics" });
+  }
+});
+
+// ==================== AI ADMIN CHAT ENDPOINT ====================
+
+app.post("/api/v1/ai/admin-chat", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    const { message, history } = req.body;
+    if (!message) {
+      return res.status(400).json({ message: "Message is required" });
+    }
+
+    // Gather full restaurant context
+    const menu = await Menu.find({});
+    const users = await User.find({}).select("-password");
+    const analytics = await calculateAnalytics();
+
+    const context = {
+      menu,
+      users,
+      analytics
+    };
+
+    const response = await aiService.getAdminChatResponse(message, context, history || []);
+    res.json({ response });
+  } catch (error) {
+    console.error("Admin AI Chat Error:", error);
+    res.status(500).json({ message: "Error in admin AI chat" });
   }
 });
 
@@ -1056,6 +1088,105 @@ app.post("/api/v1/settings/toggle-table/:tableNumber", verifyToken, checkRole(["
     console.error("Error toggling table:", error.message);
     res.status(500).json({ message: "Error toggling table" });
   }
+});
+
+// ==================== AI CHAT ENDPOINTS ====================
+
+// Chat with AI about menu (public endpoint)
+app.post("/api/v1/ai/chat", async (req, res) => {
+  try {
+    const { message, conversationHistory } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ message: "Message is required" });
+    }
+
+    // Check if GROQ_API_KEY is configured
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(503).json({ 
+        message: "AI service is not configured. Please contact the administrator.",
+        error: "GROQ_API_KEY not found"
+      });
+    }
+
+    const response = await aiService.getMenuChatResponse(message, conversationHistory || []);
+    res.json({ response });
+  } catch (error) {
+    console.error("AI Chat Error:", error.message);
+    res.status(500).json({ message: error.message || "Error generating AI response" });
+  }
+});
+
+// Chat with AI with menu context (public endpoint)
+app.post("/api/v1/ai/menu-chat", async (req, res) => {
+  try {
+    const { message, conversationHistory } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ message: "Message is required" });
+    }
+
+    // Check if GROQ_API_KEY is configured
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(503).json({ 
+        message: "AI service is not configured. Please contact the administrator.",
+        error: "GROQ_API_KEY not found"
+      });
+    }
+
+    // Get all menu items
+    const menuItems = await Menu.find({}).select("title category subcategory price discount isAvailable");
+    
+    const response = await aiService.getMenuContextualResponse(message, menuItems, conversationHistory || []);
+    res.json({ response });
+  } catch (error) {
+    console.error("AI Menu Chat Error:", error.message);
+    res.status(500).json({ message: error.message || "Error generating AI response" });
+  }
+});
+
+// Get AI analytics insight (admin only)
+app.get("/api/v1/ai/analytics-insight", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    // Check if GROQ_API_KEY is configured
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(503).json({ 
+        message: "AI service is not configured. Please contact the administrator.",
+        error: "GROQ_API_KEY not found"
+      });
+    }
+
+    // Fetch analytics data
+    const orders = await Order.find({}).populate("items.menuItemId", "title price category");
+    const items = await Menu.find({});
+
+    const totalOrders = orders.length;
+    const completedOrders = orders.filter((o) => o.status === "served").length;
+    const totalRevenue = orders.filter((o) => o.status === "served").reduce((sum, o) => sum + (o.total || 0), 0);
+
+    const analyticsData = {
+      totalOrders,
+      completedOrders,
+      totalRevenue: totalRevenue.toFixed(2),
+      averageOrderValue: completedOrders > 0 ? (totalRevenue / completedOrders).toFixed(2) : 0,
+      popularItems: items.map((item) => ({ title: item.title, popularity: item.popularity || 0 })).sort((a, b) => b.popularity - a.popularity).slice(0, 5),
+    };
+
+    const insight = await aiService.getAnalyticsInsight(analyticsData);
+    res.json({ insight });
+  } catch (error) {
+    console.error("AI Analytics Insight Error:", error.message);
+    res.status(500).json({ message: error.message || "Error generating AI insight" });
+  }
+});
+
+// Check AI service status (public)
+app.get("/api/v1/ai/status", async (req, res) => {
+  const isConfigured = !!process.env.GROQ_API_KEY;
+  res.json({
+    available: isConfigured,
+    message: isConfigured ? "AI service is available" : "AI service is not configured"
+  });
 });
 
 // ==================== LEGACY ENDPOINTS (For backward compatibility) ====================
