@@ -1134,8 +1134,8 @@ app.post("/api/v1/ai/menu-chat", async (req, res) => {
       });
     }
 
-    // Get all menu items
-    const menuItems = await Menu.find({}).select("title category subcategory price discount isAvailable");
+    // Get all menu items with popularity for AI context
+    const menuItems = await Menu.find({}).select("title category subcategory price discount isAvailable popularity");
     
     const response = await aiService.getMenuContextualResponse(message, menuItems, conversationHistory || []);
     res.json({ response });
