@@ -19,8 +19,11 @@ const settingsSchema = new mongoose.Schema({
   phone: { type: String, default: "+90 (212) 555-1234" },
   address: { type: String, default: "İstanbul, Türkiye" },
   businessHours: {
+    isEnabled: { type: Boolean, default: false }, // false: 7/24 mod, true: saat aralığı modu
+    is247: { type: Boolean, default: true },       // true: her zaman açık, false: her zaman kapalı (isEnabled=false iken)
     open: { type: String, default: "09:00" },
     close: { type: String, default: "23:00" },
+    timezone: { type: String, default: "Europe/Istanbul" },
   },
   minimumOrder: { type: Number, default: 25, min: 0 },
   currency: { type: String, default: "₺", enum: ["₺", "$", "€"] },
