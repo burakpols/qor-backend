@@ -281,10 +281,155 @@ ${fullContext}`;
   }
 }
 
+// System prompt for smart menu chat with real order data - CUSTOMER FRIENDLY
+function getSmartMenuSystemPrompt() {
+  return `
+## 🍽️ qor AI: Müşteri Odaklı Restoran Rehberi
+
+**KİMLİK:** Sen, restoranın sıcak ve bilgili bir hostcusun. Misyonun, müşterilere en iyi deneyimi sunmak için gerçek verileri kullanarak yardımcı olmak.
+
+### 📊 KULLANABİLECEĞİN VERİLER
+Sana sunulan sipariş ve menü verilerini kullan:
+- **Popülerlik:** Ürünlerin ne kadar çok tercih edildiği (sipariş sayısı)
+- **Günlük trendler:** Bugün en çok sipariş edilen ürünler
+- **Kategori popülerliği:** Yemekler mi içecekler mi daha çok tercih ediliyor
+- **Birlikte tercih edilenler:** Hangi yemeğe hangi içecek sıklıkla eşlik ediyor
+
+### ✅ YAPABİLECEKLERİN
+- "Bugün en popüler yemeğimiz X" diyebilirsin (gerçek sipariş verilerine dayalı)
+- "Bu hafta en çok tercih edilen içecek Y" diyebilirsin
+- "Müşterilerimiz genellikle X ile Y'yi birlikte tercih ediyor" diyebilirsin
+- "Bugün X ürünümüz çok seviliyor" diyebilirsin
+- Öneri yaparken popülerlik verilerini kullanabilirsin
+
+### ❌ YAPAMAYACAKLARIN (Kesinlikle YOK!)
+- **Kullanıcı/çalışan bilgisi:** "Bugün 15 kişi girdi" veya "Şu kullanıcı sipariş verdi" gibi bilgiler VERME
+- **Finansal veriler:** "Günlük ciromuz X TL" veya "Kar marjımız %30" gibi bilgiler VERME
+- **Şirket analizi:** "Satışlarımız düşüyor" veya "Bu ay X ürünü az sattık" gibi şirket içi değerlendirmeler VERME
+- **Personel bilgisi:** "Şef bugün çok yemek pişirdi" gibi bilgiler VERME
+- **Karşılaştırmalı analiz:** "Geçen haftaya göre X arttı" gibi trend analizleri YAPMA
+- **Genelleme:** "Müşterilerimiz genellikle..." diye başlayıp somut veri olmadan genelleme YAPMA
+
+### 🎯 TONLAMA KURALLARI
+- Samimi ve sıcak ol: "Bugün çok sevilen...", "Müşterilerimiz arasında popüler..."
+- Veriye dayalı ol: Sadece "X ürünü bugün 48 kez sipariş edildi" gibi somut verileri paylaş
+- Kısa ve öz tut: 2-3 cümlede cevapla
+- Soru sorunca yardımcı ol: Önerilerini popülerlik verilerine göre yap
+
+### 📝 YANIT FORMATI
+- Her zaman veriye dayalı konuş
+- Sipariş sayılarını söylerken somut rakam ver: "48 sipariş" gibi
+- Popülerlik sıralaması yaparken somut ver kullan
+- Eğer somut veri yoksa, o konuda yorum yapma
+
+### ❓ BİLİNMEYEN DURUMLAR
+Eğer bir konuda somut sipariş verisi yoksa:
+- "Bu konuda henüz yeterli veri bulunmuyor" de
+- Menü bilgisi varsa onu kullan
+- Kesinlikle uydurma rakam verme
+`;
+}
+
+// Get smart menu response with real order analytics
+async function getSmartMenuResponse(userMessage, orderAnalytics, menuItems, conversationHistory = []) {
+  try {
+    const apiKey = getApiKey();
+
+    // Format menu items for context
+    const menuContext = menuItems.map(item => 
+      `- ${item.title} (${item.category}/${item.subcategory}): ${item.price}₺${item.discount ? ` [${item.discount}% indirimli]` : ''}`
+    ).join('\n');
+
+    // Format order analytics for context
+    const orderContext = orderAnalytics ? `
+---
+## 📊 SİPARİŞ ANALİZİ VERİLERİ (GERÇEK)
+
+**Son 7 Gün İstatistikleri:**
+${orderAnalytics.periodStats ? `
+- Toplam Sipariş: ${orderAnalytics.periodStats.totalOrders}
+- Toplam Ürün Satışı: ${orderAnalytics.periodStats.totalItemsSold}
+- Toplam Ciro: ${orderAnalytics.periodStats.totalRevenue}₺
+` : 'Veri yok'}
+
+**Bugünün Popüler Ürünleri (En Çok Sipariş Edilenler):**
+${orderAnalytics.todayTopItems?.length > 0 ? 
+  orderAnalytics.todayTopItems.map((item, i) => `${i+1}. ${item.title} - ${item.orderCount} sipariş`).join('\n') : 
+  'Bugün için veri yok'}
+
+**Bu Haftanın En Popüler Yemekleri:**
+${orderAnalytics.weekTopItems?.length > 0 ?
+  orderAnalytics.weekTopItems.map((item, i) => `${i+1}. ${item.title} (${item.orderCount} sipariş)`).join('\n') :
+  'Bu hafta için veri yok'}
+
+**Bu Haftanın En Popüler İçecekleri:**
+${orderAnalytics.weekTopDrinks?.length > 0 ?
+  orderAnalytics.weekTopDrinks.map((item, i) => `${i+1}. ${item.title} (${item.orderCount} sipariş)`).join('\n') :
+  'İçecek verisi yok'}
+
+**Kategori Popülerlikleri:**
+${orderAnalytics.categoryStats?.length > 0 ?
+  orderAnalytics.categoryStats.map(cat => `- ${cat.category}: ${cat.orderCount} sipariş, ${cat.revenue}₺`).join('\n') :
+  'Veri yok'}
+
+**Birlikte Tercih Edilen Ürünler:**
+${orderAnalytics.popularCombos?.length > 0 ?
+  orderAnalytics.popularCombos.map(combo => `- ${combo.mainItem} + ${combo.pairedItem}: ${combo.count} kez birlikte`).join('\n') :
+  'Veri yok'}
+` : 'Sipariş analizi verisi yok';
+
+    const systemPrompt = `${getSmartMenuSystemPrompt()}
+
+${orderContext}
+
+---
+## 🍽️ MENÜ
+${menuContext}`;
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...conversationHistory.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      })),
+      { role: 'user', content: userMessage }
+    ];
+
+    const response = await axios.post(
+      GROQ_API_URL,
+      {
+        model: MODEL,
+        messages: messages,
+        temperature: 0.6,
+        max_tokens: 600
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    if (error.response?.status === 401) {
+      throw new Error('Invalid Groq API key. Please check your GROQ_API_KEY in .env');
+    }
+    if (error.response?.status === 429) {
+      throw new Error('Groq API rate limit exceeded. Please try again later.');
+    }
+    console.error('Groq Smart Menu API Error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   getChatResponse,
   getMenuContextualResponse,
   getAnalyticsInsight,
   getAdminChatResponse,
-  getAdminAnalystSystemPrompt
+  getAdminAnalystSystemPrompt,
+  getSmartMenuResponse,
+  getSmartMenuSystemPrompt
 };

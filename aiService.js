@@ -45,9 +45,20 @@ async function getAdminChatResponse(userMessage, context, conversationHistory = 
   }
 }
 
+// Get smart menu chat response with real order analytics - CUSTOMER VERSION
+async function getSmartMenuChatResponse(userMessage, orderAnalytics, menuItems, conversationHistory = []) {
+  try {
+    return await groqService.getSmartMenuResponse(userMessage, orderAnalytics, menuItems, conversationHistory);
+  } catch (error) {
+    console.error('AI Smart Menu Chat Error:', error);
+    throw error;
+  }
+}
+
 module.exports = {
   getMenuChatResponse,
   getMenuContextualResponse,
   getAnalyticsInsight,
-  getAdminChatResponse
+  getAdminChatResponse,
+  getSmartMenuChatResponse
 };

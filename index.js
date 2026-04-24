@@ -1117,7 +1117,7 @@ app.post("/api/v1/ai/chat", async (req, res) => {
   }
 });
 
-// Chat with AI with menu context (public endpoint)
+// Chat with AI with menu context (public endpoint) - NOW WITH REAL ORDER ANALYTICS
 app.post("/api/v1/ai/menu-chat", async (req, res) => {
   try {
     const { message, conversationHistory } = req.body;
@@ -1137,10 +1137,127 @@ app.post("/api/v1/ai/menu-chat", async (req, res) => {
     // Get all menu items with popularity for AI context
     const menuItems = await Menu.find({}).select("title category subcategory price discount isAvailable popularity");
     
-    const response = await aiService.getMenuContextualResponse(message, menuItems, conversationHistory || []);
+    // Calculate order analytics for the last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    
+    const recentOrders = await Order.find({
+      createdAt: { $gte: sevenDaysAgo },
+      status: { $in: ['pending', 'preparing', 'ready', 'served'] }
+    }).populate("items.menuItemId", "title category");
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Calculate analytics
+    const periodStats = {
+      totalOrders: recentOrders.length,
+      totalItemsSold: recentOrders.reduce((sum, order) => sum + order.items.reduce((s, i) => s + i.quantity, 0), 0),
+      totalRevenue: recentOrders.filter(o => o.status === 'served').reduce((sum, order) => sum + (order.total || 0), 0)
+    };
+    
+    // Today's top items
+    const todayOrders = recentOrders.filter(o => new Date(o.createdAt) >= today);
+    const todayItemCounts = {};
+    todayOrders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.menuItemId) {
+          const title = item.menuItemId.title;
+          todayItemCounts[title] = (todayItemCounts[title] || 0) + item.quantity;
+        }
+      });
+    });
+    const todayTopItems = Object.entries(todayItemCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([title, orderCount]) => ({ title, orderCount }));
+    
+    // Week's top items by category
+    const weekItemCounts = {};
+    recentOrders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.menuItemId) {
+          const key = item.menuItemId._id.toString();
+          if (!weekItemCounts[key]) {
+            weekItemCounts[key] = { 
+              _id: item.menuItemId._id, 
+              title: item.menuItemId.title, 
+              category: item.menuItemId.category,
+              orderCount: 0 
+            };
+          }
+          weekItemCounts[key].orderCount += item.quantity;
+        }
+      });
+    });
+    
+    const allWeekItems = Object.values(weekItemCounts);
+    const weekTopItems = allWeekItems
+      .filter(item => item.category !== 'İçecekler' && item.category !== 'İçecekler' && item.category !== 'Drinks')
+      .sort((a, b) => b.orderCount - a.orderCount)
+      .slice(0, 5);
+    const weekTopDrinks = allWeekItems
+      .filter(item => item.category === 'İçecekler' || item.category === 'İçecekler' || item.category === 'Drinks')
+      .sort((a, b) => b.orderCount - a.orderCount)
+      .slice(0, 5);
+    
+    // Category stats
+    const categoryStats = {};
+    recentOrders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.menuItemId) {
+          const cat = item.menuItemId.category || 'Diğer';
+          if (!categoryStats[cat]) {
+            categoryStats[cat] = { category: cat, orderCount: 0, revenue: 0 };
+          }
+          categoryStats[cat].orderCount += item.quantity;
+          if (order.status === 'served') {
+            categoryStats[cat].revenue += (item.price || 0) * item.quantity;
+          }
+        }
+      });
+    });
+    const categoryStatsArray = Object.values(categoryStats).sort((a, b) => b.orderCount - a.orderCount);
+    
+    // Popular combos (items ordered together)
+    const comboCounts = {};
+    recentOrders.forEach(order => {
+      const itemTitles = order.items
+        .filter(item => item.menuItemId)
+        .map(item => item.menuItemId.title)
+        .sort();
+      
+      for (let i = 0; i < itemTitles.length; i++) {
+        for (let j = i + 1; j < itemTitles.length; j++) {
+          const combo = `${itemTitles[i]} + ${itemTitles[j]}`;
+          const mainItem = itemTitles[i];
+          const pairedItem = itemTitles[j];
+          if (!comboCounts[combo]) {
+            comboCounts[combo] = { mainItem, pairedItem, count: 0 };
+          }
+          comboCounts[combo].count++;
+        }
+      }
+    });
+    const popularCombos = Object.values(comboCounts)
+      .filter(combo => combo.count >= 2)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+    
+    const orderAnalytics = {
+      periodStats,
+      todayTopItems,
+      weekTopItems,
+      weekTopDrinks,
+      categoryStats: categoryStatsArray,
+      popularCombos
+    };
+    
+    // Use smart menu chat with real analytics
+    const response = await aiService.getSmartMenuChatResponse(message, orderAnalytics, menuItems, conversationHistory || []);
     res.json({ response });
   } catch (error) {
-    console.error("AI Menu Chat Error:", error.message);
+    console.error("AI Smart Menu Chat Error:", error.message);
     res.status(500).json({ message: error.message || "Error generating AI response" });
   }
 });
