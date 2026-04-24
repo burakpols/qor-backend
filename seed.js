@@ -187,28 +187,28 @@ const sampleUsers = [
   {
     username: "admin",
     password: "admin123", // Will be hashed
-    email: "admin@mihman.com",
+    email: "admin@akay.com",
     role: "admin",
     isActive: true
   },
   {
     username: "manager",
     password: "manager123",
-    email: "manager@mihman.com",
+    email: "manager@akay.com",
     role: "manager",
     isActive: true
   },
   {
     username: "waiter1",
     password: "waiter123",
-    email: "waiter1@mihman.com",
+    email: "waiter1@akay.com",
     role: "waiter",
     isActive: true
   },
   {
     username: "waiter2",
     password: "waiter123",
-    email: "waiter2@mihman.com",
+    email: "waiter2@akay.com",
     role: "waiter",
     isActive: true
   }

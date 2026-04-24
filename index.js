@@ -15,7 +15,7 @@ const aiService = require("./aiService");
 
 // ==================== SETTINGS SCHEMA ====================
 const settingsSchema = new mongoose.Schema({
-  restaurantName: { type: String, default: "Mihman Restaurant" },
+  restaurantName: { type: String, default: "akay Restaurant" },
   phone: { type: String, default: "+90 (212) 555-1234" },
   address: { type: String, default: "İstanbul, Türkiye" },
   businessHours: {

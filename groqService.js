@@ -30,7 +30,7 @@ KURALLAR:
 6. Sipariş vermeye yardımcı ol
 7. Eğer bir öğe hakkında bilgin yoksa "Bu konuda emin değilim" de
 
-Restoran adı: Mihman Restaurant
+Restoran adı: akay Restaurant
 Çalışma saatleri: 09:00 - 23:00`;
 }
 
