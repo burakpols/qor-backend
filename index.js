@@ -4,6 +4,8 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const path = require("path");
 const fs = require("fs");
 require("dotenv").config();
@@ -50,6 +52,25 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 3800;
 const NODE_ENV = process.env.NODE_ENV || "production";
 
+// Cloudinary Configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Cloudinary Storage for multer
+const cloudinaryStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "qor-restaurant",
+    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+    transformation: [{ width: 800, height: 600, crop: "limit" }],
+  },
+});
+
+const upload = multer({ storage: cloudinaryStorage });
+
 // Bağlantı kontrolü
 if (!MONGO_URI) {
   console.error("❌ HATA: MONGO_URI environment variable ayarlanmamış!");
@@ -63,35 +84,6 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
-// Create uploads directory if it doesn't exist
-const uploadDir = path.join(__dirname, "public", "images");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure multer for image uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  },
-});
-
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5242880 }, // 5MB default
-  fileFilter: (req, file, cb) => {
-    const allowedMimes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Invalid file type. Only images are allowed."));
-    }
-  },
-});
 
 // Connect to MongoDB
 mongoose
@@ -528,20 +520,19 @@ app.delete("/api/v1/items/:id", verifyToken, checkRole(["admin"]), async (req, r
 
 // ==================== IMAGE UPLOAD ENDPOINT ====================
 
-// Upload image
+// Upload image to Cloudinary
 app.post("/api/v1/upload", verifyToken, checkRole(["admin", "manager"]), upload.single("image"), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
     }
 
-    // Return relative path for storing in database
-    const imagePath = `/images/${req.file.filename}`;
+    // Return Cloudinary URL for storing in database
     res.status(201).json({
       message: "Image uploaded successfully",
       filename: req.file.filename,
-      path: imagePath,
-      url: `${req.protocol}://${req.get("host")}${imagePath}`,
+      path: req.file.path,
+      url: req.file.path, // This is the Cloudinary secure_url
     });
   } catch (error) {
     console.error("Image upload error:", error.message);
