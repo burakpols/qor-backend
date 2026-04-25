@@ -37,6 +37,7 @@ const settingsSchema = new mongoose.Schema({
     totalTables: { type: Number, default: 20, min: 1 },
     inactiveTables: [{ type: Number }],
   },
+  categories: [{ type: String }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
@@ -1058,6 +1059,63 @@ app.put("/api/v1/settings", verifyToken, checkRole(["admin"]), async (req, res) 
   } catch (error) {
     console.error("Error updating settings:", error.message);
     res.status(500).json({ message: "Error updating settings" });
+  }
+});
+
+// Get categories from settings
+app.get("/api/v1/categories", verifyToken, checkRole(["admin", "manager"]), async (req, res) => {
+  try {
+    let settings = await Settings.findOne({});
+    if (!settings) {
+      // Create default settings with categories
+      const defaultCategories = ["Burgers", "Pizza", "Salads", "Beverages", "Desserts", "Pasta", "Appetizers", "Main Courses"];
+      settings = await Settings.create({ categories: defaultCategories });
+    }
+    res.json({ categories: settings.categories || [] });
+  } catch (error) {
+    console.error("Error fetching categories:", error.message);
+    res.status(500).json({ message: "Error fetching categories" });
+  }
+});
+
+// Add new category
+app.post("/api/v1/categories", verifyToken, checkRole(["admin"]), async (req, res) => {
+  try {
+    const { category } = req.body;
+    
+    if (!category || !category.trim()) {
+      return res.status(400).json({ message: "Kategori adı gerekli" });
+    }
+    
+    const trimmedCategory = category.trim();
+    
+    let settings = await Settings.findOne({});
+    if (!settings) {
+      settings = await Settings.create({ categories: [] });
+    }
+    
+    if (!settings.categories) {
+      settings.categories = [];
+    }
+    
+    // Check if category already exists
+    if (settings.categories.some(c => c.toLowerCase() === trimmedCategory.toLowerCase())) {
+      return res.status(400).json({ message: "Bu kategori zaten mevcut" });
+    }
+    
+    settings.categories.push(trimmedCategory);
+    settings.updatedAt = new Date();
+    await settings.save();
+    
+    console.log(`✓ New category added: ${trimmedCategory}`);
+    res.json({ 
+      message: "Kategori eklendi", 
+      category: trimmedCategory,
+      categories: settings.categories 
+    });
+  } catch (error) {
+    console.error("Error adding category:", error.message);
+    res.status(500).json({ message: "Error adding category" });
   }
 });
 
