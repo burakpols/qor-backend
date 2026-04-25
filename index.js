@@ -3,11 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
-const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const path = require("path");
-const fs = require("fs");
 require("dotenv").config();
 
 const Menu = require("./models/Menu");
@@ -58,18 +55,6 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-
-// Cloudinary Storage for multer
-const cloudinaryStorage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: "qor-restaurant",
-    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
-    transformation: [{ width: 800, height: 600, crop: "limit" }],
-  },
-});
-
-const upload = multer({ storage: cloudinaryStorage });
 
 // Bağlantı kontrolü
 if (!MONGO_URI) {
@@ -520,19 +505,39 @@ app.delete("/api/v1/items/:id", verifyToken, checkRole(["admin"]), async (req, r
 
 // ==================== IMAGE UPLOAD ENDPOINT ====================
 
-// Upload image to Cloudinary
-app.post("/api/v1/upload", verifyToken, checkRole(["admin", "manager"]), upload.single("image"), (req, res) => {
+// Upload image to Cloudinary (base64 format)
+app.post("/api/v1/upload", verifyToken, checkRole(["admin", "manager"]), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded" });
+    const { image, filename } = req.body;
+
+    if (!image) {
+      return res.status(400).json({ message: "No image data provided" });
     }
 
-    // Return Cloudinary URL for storing in database
+    // Extract base64 data and mime type
+    const matches = image.match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ message: "Invalid image format. Use base64." });
+    }
+
+    const ext = matches[1];
+    const base64Data = matches[2];
+    const fileName = filename || `qor-${Date.now()}.${ext}`;
+
+    // Upload to Cloudinary
+    const result = await cloudinary.uploader.upload(
+      `data:image/${ext};base64,${base64Data}`,
+      {
+        folder: "qor-restaurant",
+        public_id: fileName.replace(`.${ext}`, ""),
+        resource_type: "auto",
+      }
+    );
+
     res.status(201).json({
       message: "Image uploaded successfully",
-      filename: req.file.filename,
-      path: req.file.path,
-      url: req.file.path, // This is the Cloudinary secure_url
+      url: result.secure_url,
+      publicId: result.public_id,
     });
   } catch (error) {
     console.error("Image upload error:", error.message);
@@ -1387,13 +1392,6 @@ app.get("/health", (req, res) => {
 
 app.use((err, req, res, next) => {
   console.error("Error:", err.message);
-
-  if (err instanceof multer.MulterError) {
-    if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({ message: "File size too large" });
-    }
-  }
-
   res.status(500).json({
     message: NODE_ENV === "development" ? err.message : "Internal server error",
   });
